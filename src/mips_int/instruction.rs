@@ -1,7 +1,3 @@
-use crate::mips_int::instruction::OPName::SRLV;
-use crate::mips_int::register;
-use crate::mips_int::register::RegNames;
-
 //https://opencores.org/projects/plasma/opcodes
 //Notes: The immediate values are normally sign extended.
 pub const OP_ADD: u32	= 0b00000000000000000000000000100000;
@@ -58,6 +54,7 @@ pub const OP_SYSCALL: u32 = 0b00000000000000000000000000001100;
 pub const OP_FIRST_CODE: u32 = 0b11111100000000000000000000000000;
 pub const OP_SECOND_CODE: u32 = 0b00000000000000000000000000111111;
 
+#[allow(dead_code)]
 #[derive(Copy, Clone)]
 pub enum OPName {
 	VOID, // not a real function!
@@ -114,7 +111,7 @@ pub enum OPName {
 }
 
 impl OPName {
-	pub fn from(name: &str) -> (u32) {
+	pub fn from(name: &str) -> u32 {
 		match name {
 			"add"	=> { OP_ADD },
 			"addi"	=> { OP_ADDI },
@@ -165,7 +162,7 @@ impl OPName {
 			"j"		=> { OP_J },
 			"jal"	=> { OP_JAL },
 			"syscall" => { OP_SYSCALL },
-			&_ => { (0) }
+			&_ => { 0 }
 		}
 	}
 }

@@ -1,14 +1,13 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fs;
-use std::str::SplitWhitespace;
+use std::ops::Add;
 use byteorder::{BigEndian, ReadBytesExt};
 
-use crate::mips_int::instruction::{OPName};
 use crate::mips_int::register::RegNames;
 use regex::{Regex, Split};
 
-pub(crate) mod register;
+pub mod register;
 mod instruction;
 
 //https://www.cs.unibo.it/~solmi/teaching/arch_2002-2003/AssemblyLanguageProgDoc.pdf
@@ -49,7 +48,14 @@ impl MipsInterpreter {
 	}
 
 	fn inst_add(&mut self, inst: u32) {
-		//
+		//rd = rs + rt
+		let rs = (inst & 0b00000011111000000000000000000000) >> 21;
+		let rt = (inst & 0b00000000000111110000000000000000) >> 16;
+		let rd = (inst & 0b00000000000000001111100000000000) >> 11;
+
+		let rs_val = self.registers[rs as usize].get_u32();
+		let rt_val = self.registers[rt as usize].get_u32();
+		self.registers[rd as usize].value.uint = rs_val + rt_val;
 	}
 
 	fn inst_jump(&mut self, addr: u32) {
@@ -112,51 +118,65 @@ impl MipsInterpreter {
 		let first = code & instruction::OP_FIRST_CODE;
 		if first != 0 {
 			// We use the leading bits
-			return first
+			first
 		} else {
 			// We use the trailing bits
 			code & instruction::OP_SECOND_CODE
 		}
 	}
 
-	pub fn process_line(&mut self) -> Result<(), MipsError> {
-		let inst;
-		unsafe {
-			inst = self.program[self.pc.value.uint as usize];
+	pub fn get_program_contents(&self) -> String {
+		let mut s = String::with_capacity(self.program.len()*3);
+		for line in self.program.iter() {
+			s.push_str(format!("{}\n", line).as_str());
 		}
+		s
+	}
+
+	pub fn process_line(&mut self) -> Result<(), MipsError> {
+		let inst= self.program[self.pc.get_u32() as usize];
 		let opcode = MipsInterpreter::get_opcode_from_instruction(inst);
 		match opcode {
 			instruction::OP_ADD => { self.inst_add(inst); }
 			instruction::OP_J => { self.inst_jump(inst); }
 			_ => { return Err(MipsError::UnknownInstruction(inst)); }
 		}
-		// On a CPU, this would increase by 4
-		// but we can keep things on a 32 bit level, instead of 8 (so increase by 1)
 		unsafe {
-			self.pc.value.uint += 1;
+			// because this mutation also reads from the union, we must wrap in unsafe
+			self.pc.value.uint += 4;
 		}
 
 		Ok(())
 	}
 
-	fn read_val_or_immediate(vars: &mut HashMap<String, i16>,
-							 labels: &mut HashMap<String, usize>,
-							 terms: &mut SplitWhitespace) -> i16 {
+	fn read_val_or_immediate(vars: &mut HashMap<String, i32>,
+							 labels: &mut HashMap<String, u32>,
+							 terms: &mut Split) -> i32 {
 		let val = terms.next().unwrap();
 		match vars.entry(String::from(val)) {
 			Entry::Occupied(e) => {
-				*e.get()
+				*e.get() as i32
 			}
 			Entry::Vacant(_) => {
 				match labels.entry(String::from(val)) {
 					Entry::Occupied(e) => {
-						*e.get() as i16
+						*e.get() as i32
 					}
 					Entry::Vacant(_) => {
-						val.parse::<i16>().unwrap()
+						val.parse::<i32>().unwrap()
 					}
 				}
 			}
+		}
+	}
+
+	fn load_zero_into_line(line: u32, idx: usize) -> u32 {
+		match idx {
+			0 => { line & 0b00000000111111111111111111111111 },
+			1 => { line & 0b11111111000000001111111111111111 },
+			2 => { line & 0b11111111111111110000000011111111 },
+			3 => { line & 0b11111111111111111111111100000000 },
+			_ => { 0 /* THIS SHOULD NEVER BE REACHED*/ }
 		}
 	}
 
@@ -168,17 +188,21 @@ impl MipsInterpreter {
 
 		if let Ok(contents) = fs::read_to_string(filename) {
 			self.reset(); // only reset if the file can be read/loaded
-			let mut line_count : usize = 0;
-			let mut data_pointer: usize = 0;	// keeps track of every byte, not every line
 			let mut current_line: u32 = 0;		// line of meaningful text in the ASM
+
+			// keeps track of every byte, not every line
+			// this just rotates between 0-3 for the 32 bits per line
+			let mut data_pointer: u32 = 0;
 			for line in contents.lines() {
-				println!("{}: {}", line_count, line);
+				println!("{} ({}): {}", data_pointer, data_pointer%4, line);
 				let line = line.trim();
 				if line.starts_with("#") || line.eq("") { continue; }
 
-				// split on whitespace and =
+				// split on 'whitespace' and '='
 				let assign_regex = Regex::new("[=\\s]+").unwrap();
+				let label_regex = Regex::new("[A-Za-z]+:").unwrap();
 				match state {
+
 					LoadingState::FileOpen => {
 						if line == ".data" {
 							state = LoadingState::Data;
@@ -189,28 +213,38 @@ impl MipsInterpreter {
 						let val = terms.next().unwrap().trim();
 						variables.insert(lbl.parse().unwrap(), val.parse().unwrap());
 					}
+
 					LoadingState::Data => {
 						if line == ".text" {
 							state = LoadingState::Code;
 							continue;
 						}
 
-						if line.starts_with(".align") {
+						if label_regex.is_match(line) {
+							labels.insert(String::from(line), data_pointer);
+						} else if line.starts_with(".align") {
 							let mut terms = assign_regex.split(line);
 							let _ = terms.next(); // the .assign keyword
-							let val: usize = terms.next().unwrap().trim().parse().unwrap(); // value to align by
+							// the value is in terms of halfwords. I don't know why, it just is.
+							let val: u32 = terms.next().unwrap().trim().parse().unwrap();
 							if data_pointer % (2 * val) != 0 {
 								self.program.push(current_line);
-								data_pointer = self.program.len()*4;
+								data_pointer = (self.program.len() * 4) as u32;
 								current_line = 0;
 								continue;
 							}
 						} else if line.starts_with(".space") {
 							let mut terms = assign_regex.split(line);
 							let _ = terms.next(); // the .assign keyword
-							let val: usize = terms.next().unwrap().trim().parse().unwrap();
-							for i in 0..val {
-
+							let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
+							for i in 0..val as usize {
+								// loads in a SINGLE BYTE into where-ever the data_pointer says
+								current_line = MipsInterpreter::load_zero_into_line(current_line, i%4);
+								data_pointer += 1;
+								if data_pointer % 4 == 0 {
+									self.program.push(current_line);
+									current_line = 0;
+								}
 							}
 						} else if line.starts_with(".word") {
 							//
@@ -228,14 +262,20 @@ impl MipsInterpreter {
 							//
 						}
 					}
+
 					LoadingState::Code => {
-						self.program.push(current_line);
-						current_line = 0;
+						if label_regex.is_match(line) {
+							labels.insert(String::from(line), data_pointer);
+						} else {
+							self.program.push(current_line);
+							current_line = 0;
+						}
 					}
 				}
-				line_count += 1;
 			} // for each line
 		}; // end if Ok(contents)
+
+		self.pc.value.uint = *labels.get("main").unwrap();
 
 		Ok(())
 	}
