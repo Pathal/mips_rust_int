@@ -265,20 +265,46 @@ impl RegNames {
 }
 
 #[derive(Copy, Clone)]
+pub union RegisterType {
+	pub uint: u32,
+	pub int: i32,
+	pub float: f32,
+}
+#[derive(Copy, Clone)]
 pub struct Register {
-	pub value: i32,
+	pub value: RegisterType,
 	pub name: RegNames,
 }
 
 impl Register {
 	pub fn new(n: RegNames) -> Register {
 		Register {
-			value: 0,
+			value: RegisterType{ int: 0 },
 			name: n,
 		}
 	}
 
 	pub fn display_string(&self) -> String {
-		format!("{}: {}", RegNames::to_str(&self.name), &self.value)
+		unsafe {
+			format!("{}: {}", RegNames::to_str(&self.name), &self.value.uint)
+		}
+	}
+
+	pub fn get_u32(&self) -> u32 {
+		unsafe {
+			self.value.uint
+		}
+	}
+
+	pub fn get_i32(&self) -> i32 {
+		unsafe {
+			self.value.int
+		}
+	}
+
+	pub fn get_f32(&self) -> f32 {
+		unsafe {
+			self.value.float
+		}
 	}
 }

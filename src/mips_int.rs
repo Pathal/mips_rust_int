@@ -1,18 +1,27 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fs;
-use std::str::SplitWhitespace;
+use std::ops::Add;
+use byteorder::{BigEndian, ReadBytesExt};
 
-use crate::mips_int::instruction::{Instruction, OPName};
 use crate::mips_int::register::RegNames;
+use regex::{Regex, Split};
 
-pub(crate) mod register;
+pub mod register;
 mod instruction;
+
+//https://www.cs.unibo.it/~solmi/teaching/arch_2002-2003/AssemblyLanguageProgDoc.pdf
 
 #[derive(Debug)]
 pub enum MipsError {
-	UnknownInstruction,
+	UnknownInstruction(u32),
 	SyntaxError(usize),
+}
+
+enum LoadingState {
+	FileOpen,
+	Data,
+	Code
 }
 
 pub struct MipsInterpreter {
@@ -21,8 +30,8 @@ pub struct MipsInterpreter {
 	pc: register::Register,
 	hi: register::Register,
 	lo: register::Register,
-	program: Vec<instruction::Instruction>,
-	labels: HashMap<String, i32>,
+	program: Vec<u32>,
+	labels: HashMap<String, u32>,
 }
 
 impl MipsInterpreter {
@@ -38,13 +47,20 @@ impl MipsInterpreter {
 		}
 	}
 
-	fn inst_add(&mut self, inst: &instruction::Instruction) {
-		//
+	fn inst_add(&mut self, inst: u32) {
+		//rd = rs + rt
+		let rs = (inst & 0b00000011111000000000000000000000) >> 21;
+		let rt = (inst & 0b00000000000111110000000000000000) >> 16;
+		let rd = (inst & 0b00000000000000001111100000000000) >> 11;
+
+		let rs_val = self.registers[rs as usize].get_u32();
+		let rt_val = self.registers[rt as usize].get_u32();
+		self.registers[rd as usize].value.uint = rs_val + rt_val;
 	}
 
-	fn inst_jump(&mut self, lbl: &usize) {
+	fn inst_jump(&mut self, addr: u32) {
 		//let index = self.labels[lbl];
-		self.pc.value = *lbl as i32;
+		self.pc.value.uint = addr;
 	}
 
 	pub fn new() -> MipsInterpreter {
@@ -93,230 +109,173 @@ impl MipsInterpreter {
 	}
 
 	fn reset(&mut self) {
-		self.pc.value = 0;
+		self.pc.value.uint = 0;
 		self.program = vec![];
 		self.labels = HashMap::new();
 	}
 
-	pub fn process_line(&mut self) -> Result<(), MipsError> {
-		let inst = self.program[self.pc.value as usize].clone();
-		match inst.op {
-			OPName::ADD => self.inst_add(&inst),
-			OPName::ADDU => {}
-			OPName::ADDI => {}
-			OPName::ADDIU => {}
-			OPName::SUB => {}
-			OPName::SUBU => {}
-			OPName::AND => {}
-			OPName::ANDI => {}
-			OPName::OR => {}
-			OPName::ORI => {}
-			OPName::XOR => {}
-			OPName::XORI => {}
-			OPName::NOR => {}
-			OPName::SLL => {}
-			OPName::SRL => {}
-			OPName::SRA => {}
-			OPName::SLLV => {}
-			OPName::SRLV => {}
-			OPName::SRAV => {}
-			OPName::SLT => {}
-			OPName::SLTI => {}
-			OPName::SLTU => {}
-			OPName::SLTIU => {}
-			OPName::MULT => {}
-			OPName::MULTU => {}
-			OPName::DIV => {}
-			OPName::DIVU => {}
-			OPName::MFHI => {}
-			OPName::MTHI => {}
-			OPName::MFLO => {}
-			OPName::LI => {}
-			OPName::LUI => {}
-			OPName::LW => {}
-			OPName::LH => {}
-			OPName::LHU => {}
-			OPName::LB => {}
-			OPName::LBU => {}
-			OPName::SW => {}
-			OPName::SH => {}
-			OPName::SB => {}
-			OPName::BEQ => {}
-			OPName::BNE => {}
-			OPName::JR => {}
-			OPName::J => self.inst_jump(&inst.addr),
-			OPName::JAL => {}
-			OPName::SYSCALL => {},
-			_ => { return Err(MipsError::UnknownInstruction); }
+	fn get_opcode_from_instruction(code: u32) -> u32 {
+		let first = code & instruction::OP_FIRST_CODE;
+		if first != 0 {
+			// We use the leading bits
+			first
+		} else {
+			// We use the trailing bits
+			code & instruction::OP_SECOND_CODE
 		}
+	}
 
-		// On a CPU, this would increase by 4
-		// but we can keep things on a 32 bit level, instead of 8 (so increase by 1)
-		self.pc.value += 1;
+	pub fn get_program_contents(&self) -> String {
+		let mut s = String::with_capacity(self.program.len()*3);
+		for line in self.program.iter() {
+			s.push_str(format!("{}\n", line).as_str());
+		}
+		s
+	}
+
+	pub fn process_line(&mut self) -> Result<(), MipsError> {
+		let inst= self.program[self.pc.get_u32() as usize];
+		let opcode = MipsInterpreter::get_opcode_from_instruction(inst);
+		match opcode {
+			instruction::OP_ADD => { self.inst_add(inst); }
+			instruction::OP_J => { self.inst_jump(inst); }
+			_ => { return Err(MipsError::UnknownInstruction(inst)); }
+		}
+		unsafe {
+			// because this mutation also reads from the union, we must wrap in unsafe
+			self.pc.value.uint += 4;
+		}
 
 		Ok(())
 	}
 
-	fn read_val_or_immediate(vars: &mut HashMap<String, i16>,
-							 labels: &mut HashMap<String, usize>,
-							 terms: &mut SplitWhitespace) -> i16 {
+	fn read_val_or_immediate(vars: &mut HashMap<String, i32>,
+							 labels: &mut HashMap<String, u32>,
+							 terms: &mut Split) -> i32 {
 		let val = terms.next().unwrap();
 		match vars.entry(String::from(val)) {
 			Entry::Occupied(e) => {
-				*e.get()
+				*e.get() as i32
 			}
 			Entry::Vacant(_) => {
 				match labels.entry(String::from(val)) {
 					Entry::Occupied(e) => {
-						*e.get() as i16
+						*e.get() as i32
 					}
 					Entry::Vacant(_) => {
-						val.parse::<i16>().unwrap()
+						val.parse::<i32>().unwrap()
 					}
 				}
 			}
+		}
+	}
+
+	fn load_zero_into_line(line: u32, idx: usize) -> u32 {
+		match idx {
+			0 => { line & 0b00000000111111111111111111111111 },
+			1 => { line & 0b11111111000000001111111111111111 },
+			2 => { line & 0b11111111111111110000000011111111 },
+			3 => { line & 0b11111111111111111111111100000000 },
+			_ => { 0 /* THIS SHOULD NEVER BE REACHED*/ }
 		}
 	}
 
 	pub fn load_program(&mut self, filename: &str) -> Result<(), MipsError> {
 		println!("Loading {}", filename);
-		let mut variables: HashMap<String, i16> = HashMap::new();
-		let mut labels: HashMap<String, usize> = HashMap::new();
+		let mut state = LoadingState::FileOpen;
+		let mut variables: HashMap<String, i32> = HashMap::new();
+		let mut labels: HashMap<String, u32> = HashMap::new();
+
 		if let Ok(contents) = fs::read_to_string(filename) {
 			self.reset(); // only reset if the file can be read/loaded
-			let mut line_count : usize = 0;
-			for line in contents.lines() {
-				println!("{}", line);
-				let line = line.trim();
-				if line == "" || line.starts_with("#") || line.starts_with(".data")
-					|| line.starts_with(".align") || line.starts_with(".text")
-				{ continue; }
+			let mut current_line: u32 = 0;		// line of meaningful text in the ASM
 
-				let mut terms = line.split_whitespace();
-				if line.contains("=") {
-					/* It's probably a variable */
-					let k = terms.next().unwrap();
-					terms.next();
-					let v = terms.next().unwrap();
-					variables.insert(String::from(k), v.parse::<i16>().unwrap());
-				} else if line.ends_with(":") {
-					/* It's probably a label */
-					let l = terms.next().unwrap();
-					let v = line_count;
-					labels.insert(String::from(l), v);
-					// We actually don't want to increment the line number,
-					// which happens after these if blocks.
-					// So we continue instead.
-					continue;
-				} else if line.starts_with(".") {
-					/* TODO: Deal with this later */
-				} else {
-					/* It's probably an instruction */
-					let mut inst = Instruction::new();
-					let mut terms = line.split_whitespace();
-					match terms.next() {
-						None => { return Err(MipsError::SyntaxError(0)); }
-						Some(v) => {
-							inst.op = OPName::from(v);
+			// keeps track of every byte, not every line
+			// this just rotates between 0-3 for the 32 bits per line
+			let mut data_pointer: u32 = 0;
+			for line in contents.lines() {
+				println!("{} ({}): {}", data_pointer, data_pointer%4, line);
+				let line = line.trim();
+				if line.starts_with("#") || line.eq("") { continue; }
+
+				// split on 'whitespace' and '='
+				let assign_regex = Regex::new("[=\\s]+").unwrap();
+				let label_regex = Regex::new("[A-Za-z]+:").unwrap();
+				match state {
+
+					LoadingState::FileOpen => {
+						if line == ".data" {
+							state = LoadingState::Data;
+							continue;
 						}
+						let mut terms = assign_regex.split(line);
+						let lbl = terms.next().unwrap().trim();
+						let val = terms.next().unwrap().trim();
+						variables.insert(lbl.parse().unwrap(), val.parse().unwrap());
 					}
 
-					match inst.op {
-						OPName::ADD => {
-							// add $1,$2,$3 -> $1=$2+$3
-							inst.rd = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rs = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rt = RegNames::str_to_enum(terms.next().unwrap());
-							self.program.push(inst);
+					LoadingState::Data => {
+						if line == ".text" {
+							state = LoadingState::Code;
+							continue;
 						}
-						OPName::ADDU => {}
-						OPName::ADDI => {
-							//addi $1,$2,100
-							inst.rd = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rs = RegNames::str_to_enum(terms.next().unwrap());
-							inst.imm = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
-							self.program.push(inst);
-						}
-						OPName::ADDIU => {}
-						OPName::SUB => {
-							inst.rd = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rs = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rt = RegNames::str_to_enum(terms.next().unwrap());
-							self.program.push(inst);
-						}
-						OPName::SUBU => {}
-						OPName::AND => {
-							inst.rd = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rs = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rt = RegNames::str_to_enum(terms.next().unwrap());
-							self.program.push(inst);
-						}
-						OPName::ANDI => {
-							//ANDI $1,$2,100
-							inst.rd = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rs = RegNames::str_to_enum(terms.next().unwrap());
-							inst.imm = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
-							self.program.push(inst);
-						}
-						OPName::OR => {
-							inst.rd = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rs = RegNames::str_to_enum(terms.next().unwrap());
-							inst.rt = RegNames::str_to_enum(terms.next().unwrap());
-							self.program.push(inst);
-						}
-						OPName::ORI => {}
-						OPName::XOR => {}
-						OPName::XORI => {}
-						OPName::NOR => {}
-						OPName::SLL => {}
-						OPName::SRL => {}
-						OPName::SRA => {}
-						OPName::SLLV => {}
-						OPName::SRLV => {}
-						OPName::SRAV => {}
-						OPName::SLT => {}
-						OPName::SLTI => {}
-						OPName::SLTU => {}
-						OPName::SLTIU => {}
-						OPName::MULT => {}
-						OPName::MULTU => {}
-						OPName::DIV => {}
-						OPName::DIVU => {}
-						OPName::MFHI => {}
-						OPName::MTHI => {}
-						OPName::MFLO => {}
-						OPName::MTLO => {}
-						OPName::LI => {}
-						OPName::LUI => {}
-						OPName::LW => {}
-						OPName::LH => {}
-						OPName::LHU => {}
-						OPName::LB => {}
-						OPName::LBU => {}
-						OPName::SW => {}
-						OPName::SH => {}
-						OPName::SB => {}
-						OPName::BEQ => {}
-						OPName::BNE => {}
-						OPName::JR => {
-							inst.rd = RegNames::str_to_enum(terms.next().unwrap());
-						}
-						OPName::J => {
-							if let Some(v) = terms.next() {
-								match self.labels.entry(v.parse().unwrap()) {
-									Entry::Occupied(val) => {inst.addr = *val.get() as usize;}
-									Entry::Vacant(_) => {inst.addr = v.parse::<usize>().unwrap();}
+
+						if label_regex.is_match(line) {
+							labels.insert(String::from(line), data_pointer);
+						} else if line.starts_with(".align") {
+							let mut terms = assign_regex.split(line);
+							let _ = terms.next(); // the .assign keyword
+							// the value is in terms of halfwords. I don't know why, it just is.
+							let val: u32 = terms.next().unwrap().trim().parse().unwrap();
+							if data_pointer % (2 * val) != 0 {
+								self.program.push(current_line);
+								data_pointer = (self.program.len() * 4) as u32;
+								current_line = 0;
+								continue;
+							}
+						} else if line.starts_with(".space") {
+							let mut terms = assign_regex.split(line);
+							let _ = terms.next(); // the .assign keyword
+							let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
+							for i in 0..val as usize {
+								// loads in a SINGLE BYTE into where-ever the data_pointer says
+								current_line = MipsInterpreter::load_zero_into_line(current_line, i%4);
+								data_pointer += 1;
+								if data_pointer % 4 == 0 {
+									self.program.push(current_line);
+									current_line = 0;
 								}
 							}
+						} else if line.starts_with(".word") {
+							//
+						} else if line.starts_with(".halfword") {
+							//
+						} else if line.starts_with(".ascii") {
+							//
+						} else if line.starts_with(".asciiz") {
+							//
+						} else if line.starts_with(".byte") {
+							//
+						} else if line.starts_with(".float") {
+							//
+						} else if line.starts_with(".double") {
+							//
 						}
-						OPName::JAL => {}
-						OPName::SYSCALL => {}
-						_ => { return Err(MipsError::SyntaxError(line_count)); }
+					}
+
+					LoadingState::Code => {
+						if label_regex.is_match(line) {
+							labels.insert(String::from(line), data_pointer);
+						} else {
+							self.program.push(current_line);
+							current_line = 0;
+						}
 					}
 				}
-				line_count += 1;
-			}
-		};
+			} // for each line
+		}; // end if Ok(contents)
+
+		self.pc.value.uint = *labels.get("main").unwrap();
 
 		Ok(())
 	}

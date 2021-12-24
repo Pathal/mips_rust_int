@@ -7,3 +7,5 @@ edition = "2018"
 
 [dependencies]
 iced = "0.3.0"
+byteorder = "1.4.3"
+regex = "1.5.4"
