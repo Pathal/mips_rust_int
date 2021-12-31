@@ -1,14 +1,14 @@
+use std::collections::btree_map::Range;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fs;
 use std::ops::Add;
 use byteorder::{BigEndian, ReadBytesExt};
 
-use crate::mips_int::register::RegNames;
+use crate::register::RegNames;
+use crate::register::Register;
 use regex::{Regex, Split};
-
-pub mod register;
-mod instruction;
+use crate::{instruction, register};
 
 //https://www.cs.unibo.it/~solmi/teaching/arch_2002-2003/AssemblyLanguageProgDoc.pdf
 
@@ -16,6 +16,8 @@ mod instruction;
 pub enum MipsError {
 	UnknownInstruction(u32),
 	SyntaxError(usize),
+	MissingMain,
+	InvalidMain,
 }
 
 enum LoadingState {
@@ -26,10 +28,10 @@ enum LoadingState {
 
 pub struct MipsInterpreter {
 	stack: Vec<u8>,
-	registers: [register::Register; 32],
-	pc: register::Register,
-	hi: register::Register,
-	lo: register::Register,
+	registers: [Register; 32],
+	pc: Register,
+	hi: Register,
+	lo: Register,
 	program: Vec<u32>,
 	labels: HashMap<String, u32>,
 }
@@ -55,61 +57,61 @@ impl MipsInterpreter {
 
 		let rs_val = self.registers[rs as usize].get_u32();
 		let rt_val = self.registers[rt as usize].get_u32();
-		self.registers[rd as usize].value.uint = rs_val + rt_val;
+		self.registers[rd as usize].set_u32( rs_val + rt_val );
 	}
 
 	fn inst_jump(&mut self, addr: u32) {
 		//let index = self.labels[lbl];
-		self.pc.value.uint = addr;
+		self.pc.set_u32( addr );
 	}
 
 	pub fn new() -> MipsInterpreter {
 		MipsInterpreter {
 			stack: vec![],
 			registers: [
-				register::Register::new(RegNames::R0),
-				register::Register::new(RegNames::R1),
-				register::Register::new(RegNames::R2),
-				register::Register::new(RegNames::R3),
-				register::Register::new(RegNames::R4),
-				register::Register::new(RegNames::R5),
-				register::Register::new(RegNames::R6),
-				register::Register::new(RegNames::R7),
-				register::Register::new(RegNames::R8),
-				register::Register::new(RegNames::R9),
-				register::Register::new(RegNames::R10),
-				register::Register::new(RegNames::R11),
-				register::Register::new(RegNames::R12),
-				register::Register::new(RegNames::R13),
-				register::Register::new(RegNames::R14),
-				register::Register::new(RegNames::R15),
-				register::Register::new(RegNames::R16),
-				register::Register::new(RegNames::R17),
-				register::Register::new(RegNames::R18),
-				register::Register::new(RegNames::R19),
-				register::Register::new(RegNames::R20),
-				register::Register::new(RegNames::R21),
-				register::Register::new(RegNames::R22),
-				register::Register::new(RegNames::R23),
-				register::Register::new(RegNames::R24),
-				register::Register::new(RegNames::R25),
-				register::Register::new(RegNames::R26),
-				register::Register::new(RegNames::R27),
-				register::Register::new(RegNames::R28),
-				register::Register::new(RegNames::R29),
-				register::Register::new(RegNames::R30),
-				register::Register::new(RegNames::R31),
+				Register::new(RegNames::R0),
+				Register::new(RegNames::R1),
+				Register::new(RegNames::R2),
+				Register::new(RegNames::R3),
+				Register::new(RegNames::R4),
+				Register::new(RegNames::R5),
+				Register::new(RegNames::R6),
+				Register::new(RegNames::R7),
+				Register::new(RegNames::R8),
+				Register::new(RegNames::R9),
+				Register::new(RegNames::R10),
+				Register::new(RegNames::R11),
+				Register::new(RegNames::R12),
+				Register::new(RegNames::R13),
+				Register::new(RegNames::R14),
+				Register::new(RegNames::R15),
+				Register::new(RegNames::R16),
+				Register::new(RegNames::R17),
+				Register::new(RegNames::R18),
+				Register::new(RegNames::R19),
+				Register::new(RegNames::R20),
+				Register::new(RegNames::R21),
+				Register::new(RegNames::R22),
+				Register::new(RegNames::R23),
+				Register::new(RegNames::R24),
+				Register::new(RegNames::R25),
+				Register::new(RegNames::R26),
+				Register::new(RegNames::R27),
+				Register::new(RegNames::R28),
+				Register::new(RegNames::R29),
+				Register::new(RegNames::R30),
+				Register::new(RegNames::R31),
 			],
-			pc: register::Register::new(RegNames::PC),
-			hi: register::Register::new(RegNames::HI),
-			lo: register::Register::new(RegNames::LO),
+			pc: Register::new(RegNames::PC),
+			hi: Register::new(RegNames::HI),
+			lo: Register::new(RegNames::LO),
 			program: vec![],
 			labels: HashMap::new(),
 		}
 	}
 
 	fn reset(&mut self) {
-		self.pc.value.uint = 0;
+		self.pc.set_u32( 0 );
 		self.program = vec![];
 		self.labels = HashMap::new();
 	}
@@ -141,10 +143,7 @@ impl MipsInterpreter {
 			instruction::OP_J => { self.inst_jump(inst); }
 			_ => { return Err(MipsError::UnknownInstruction(inst)); }
 		}
-		unsafe {
-			// because this mutation also reads from the union, we must wrap in unsafe
-			self.pc.value.uint += 4;
-		}
+		self.pc.add_u32(4);
 
 		Ok(())
 	}
@@ -180,6 +179,40 @@ impl MipsInterpreter {
 		}
 	}
 
+	fn get_byte_segment_u32(line: u32, idx: usize) -> u8 {
+		let res = match idx {
+			0 => { (line & 0b11111111000000000000000000000000) >> 24 },
+			1 => { (line & 0b00000000111111110000000000000000) >> 16 },
+			2 => { (line & 0b00000000000000001111111100000000) >> 8 },
+			3 => { (line & 0b00000000000000000000000011111111) },
+			_ => { 0 /* THIS SHOULD NEVER BE REACHED*/ }
+		} as u8;
+		// rust refuses to handle this unless the data is named
+		// so we're naming it just to return it
+		res
+	}
+
+	fn get_byte_segment_u16(line: u16, idx: usize) -> u8 {
+		let res = match idx {
+			0 => { (line & 0b1111111100000000) >> 8 },
+			1 => { (line & 0b0000000011111111)  },
+			_ => { 0 /* THIS SHOULD NEVER BE REACHED*/ }
+		} as u8;
+		// rust refuses to handle this unless the data is named
+		// so we're naming it just to return it
+		res
+	}
+
+	fn add_byte_to_line(line: u32, pointer: u32, byte: u8) -> u32 {
+		match pointer % 4 {
+			0 => { line & (0b00000000111111111111111111111111 | (byte as u32) << 24) },
+			1 => { line & (0b11111111000000001111111111111111 | (byte as u32) << 16) },
+			2 => { line & (0b11111111111111110000000011111111 | (byte as u32) << 8) },
+			3 => { line & (0b11111111111111111111111100000000 | byte as u32) },
+			_ => { 0 /* Not actually reachable, but rust requires it. */ }
+		}
+	}
+
 	pub fn load_program(&mut self, filename: &str) -> Result<(), MipsError> {
 		println!("Loading {}", filename);
 		let mut state = LoadingState::FileOpen;
@@ -201,6 +234,18 @@ impl MipsInterpreter {
 				// split on 'whitespace' and '='
 				let assign_regex = Regex::new("[=\\s]+").unwrap();
 				let label_regex = Regex::new("[A-Za-z]+:").unwrap();
+				let quote_regex = Regex::new("\"").unwrap();
+				if label_regex.is_match(line) {
+					if line.starts_with("main:") {
+						if data_pointer % 4 != 0 {
+							return Err(MipsError::InvalidMain);
+						}
+					}
+					labels.insert(String::from(line), data_pointer);
+					continue;
+				}
+
+				// match within
 				match state {
 
 					LoadingState::FileOpen => {
@@ -220,10 +265,8 @@ impl MipsInterpreter {
 							continue;
 						}
 
-						if label_regex.is_match(line) {
-							labels.insert(String::from(line), data_pointer);
-						} else if line.starts_with(".align") {
-							let mut terms = assign_regex.split(line);
+						let mut terms = assign_regex.split(line);
+						if line.starts_with(".align") {
 							let _ = terms.next(); // the .assign keyword
 							// the value is in terms of halfwords. I don't know why, it just is.
 							let val: u32 = terms.next().unwrap().trim().parse().unwrap();
@@ -234,7 +277,6 @@ impl MipsInterpreter {
 								continue;
 							}
 						} else if line.starts_with(".space") {
-							let mut terms = assign_regex.split(line);
 							let _ = terms.next(); // the .assign keyword
 							let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
 							for i in 0..val as usize {
@@ -247,13 +289,52 @@ impl MipsInterpreter {
 								}
 							}
 						} else if line.starts_with(".word") {
-							//
+							let _ = terms.next(); // we can skip the ".word" at the start
+							let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
+							for i in 0..4 {
+								let b = MipsInterpreter::get_byte_segment_u32(val as u32, i);
+								current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
+								data_pointer += 1;
+								if data_pointer % 4 == 0 {
+									self.program.push(current_line);
+									current_line = 0;
+								}
+							}
 						} else if line.starts_with(".halfword") {
-							//
+							let _ = terms.next(); // we can skip the ".word" at the start
+							let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
+							for i in 0..2 {
+								let b = MipsInterpreter::get_byte_segment_u16(val as u16, i);
+								current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
+								data_pointer += 1;
+								if data_pointer % 4 == 0 {
+									self.program.push(current_line);
+									current_line = 0;
+								}
+							}
 						} else if line.starts_with(".ascii") {
 							//
 						} else if line.starts_with(".asciiz") {
-							//
+							let mut terms = quote_regex.split(line);
+							let _ = terms.next(); // we can skip the .asciiz
+							// and just look at the contents of the quote
+							let contents = terms.next().unwrap();
+							for c in contents.chars() {
+								let b = c.to_digit(10).unwrap() as u8;
+								current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
+								data_pointer += 1;
+								if data_pointer % 4 == 0 {
+									self.program.push(current_line);
+									current_line = 0;
+								}
+							}
+							// 0 is the NULL character for ASCII
+							current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, 0);
+							data_pointer += 1;
+							if data_pointer % 4 == 0 {
+								self.program.push(current_line);
+								current_line = 0;
+							}
 						} else if line.starts_with(".byte") {
 							//
 						} else if line.starts_with(".float") {
@@ -264,19 +345,19 @@ impl MipsInterpreter {
 					}
 
 					LoadingState::Code => {
-						if label_regex.is_match(line) {
-							labels.insert(String::from(line), data_pointer);
-						} else {
-							self.program.push(current_line);
-							current_line = 0;
-						}
+						self.program.push(current_line);
+						current_line = 0;
 					}
 				}
 			} // for each line
 		}; // end if Ok(contents)
 
-		self.pc.value.uint = *labels.get("main").unwrap();
-
-		Ok(())
+		match labels.entry(String::from("main")) {
+			Entry::Occupied(v) => {
+				self.pc.set_u32( *v.get() );
+				Ok(())
+			}
+			Entry::Vacant(e) => { Err(MipsError::MissingMain) }
+		}
 	}
 }

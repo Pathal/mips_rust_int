@@ -1,7 +1,7 @@
 use iced::{Align, Application, Button, button, Clipboard, Color, Column, Command, Container, container, Element, executor, Font, Length, Row, Scrollable, scrollable, Settings, Text, VerticalAlignment};
 
 use crate::mips_int::{MipsError, MipsInterpreter};
-use crate::mips_int::register::RegNames;
+use crate::register::RegNames;
 
 const ASM_FILEPATH: &str = "data/game.asm";
 

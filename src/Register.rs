@@ -265,21 +265,21 @@ impl RegNames {
 }
 
 #[derive(Copy, Clone)]
-pub union RegisterType {
+pub union RegisterValue {
 	pub uint: u32,
 	pub int: i32,
 	pub float: f32,
 }
 #[derive(Copy, Clone)]
 pub struct Register {
-	pub value: RegisterType,
+	pub value: RegisterValue,
 	pub name: RegNames,
 }
 
 impl Register {
 	pub fn new(n: RegNames) -> Register {
 		Register {
-			value: RegisterType{ int: 0 },
+			value: RegisterValue { int: 0 },
 			name: n,
 		}
 	}
@@ -293,6 +293,16 @@ impl Register {
 	pub fn get_u32(&self) -> u32 {
 		unsafe {
 			self.value.uint
+		}
+	}
+
+	pub fn set_u32(&mut self, val: u32) {
+		self.value.uint = val;
+	}
+
+	pub fn add_u32(&mut self, val: u32) {
+		unsafe {
+			self.value.uint += val;
 		}
 	}
 
