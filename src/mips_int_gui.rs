@@ -39,6 +39,7 @@ impl Application for MipsWindow {
                 MipsError::MissingMain => { println!("Missing 'main' indicator."); }
                 MipsError::InvalidMain => { println!("Invalid 'main' indicator."); }
                 MipsError::UnalignedBytes => { println!("Unaligned bytes."); }
+                MipsError::FileNotFound => { println!("Program file unable to be opened."); }
             }
         };
 

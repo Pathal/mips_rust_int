@@ -20,6 +20,7 @@ pub enum MipsError {
 	MissingMain,
 	InvalidMain,
 	UnalignedBytes,
+	FileNotFound,
 }
 
 enum LoadingState {
@@ -588,251 +589,263 @@ impl MipsInterpreter {
 		}
 	}
 
-	pub fn load_program(&mut self, filename: &str) -> Result<(), MipsError> {
+	pub fn load_program_file(&mut self, filename: &str) -> Result<(), MipsError> {
 		println!("Loading {}", filename);
+		if let Ok(contents) = fs::read_to_string(filename) {
+			self.load_program(&contents.as_str())
+		} else {
+			Err(MipsError::FileNotFound)
+		}
+	}
+
+	pub fn load_program(&mut self, contents: &str) -> Result<(), MipsError> {
 		let mut state = LoadingState::FileOpen;
 		let mut variables: HashMap<String, i32> = HashMap::new();
 		let mut labels: HashMap<String, u32> = HashMap::new();
 
-		if let Ok(contents) = fs::read_to_string(filename) {
-			self.reset(); // only reset if the file can be read/loaded
-			let mut current_line: u32 = 0;		// line of meaningful text in the ASM
+		self.reset();
+		let mut current_line: u32 = 0;		// line of meaningful text in the ASM
 
-			// keeps track of every byte, not every line
-			// this just rotates between 0-3 for the 32 bits per line
-			let mut data_pointer: u32 = 0;
-			for line in contents.lines() {
-				println!("{} ({}): {}", data_pointer, data_pointer%4, line);
-				let line = line.trim();
-				if line.starts_with("#") || line.eq("") { continue; }
+		// keeps track of every byte, not every line
+		// this just rotates between 0-3 for the 32 bits per line
+		let mut data_pointer: u32 = 0;
+		for line in contents.lines() {
+			println!("{} ({}): {}", data_pointer, data_pointer%4, line);
+			let line = line.trim();
+			if line.starts_with("#") || line.eq("") { continue; }
 
-				// split on 'whitespace' and '='
-				let inst_regex = Regex::new("[,\\s]+").unwrap();
-				let assign_regex = Regex::new("[=\\s]+").unwrap();
-				let label_regex = Regex::new("[A-Za-z]+:").unwrap();
-				let quote_regex = Regex::new("\"").unwrap();
-				if label_regex.is_match(line) {
-					if line.starts_with("main:") {
-						if data_pointer % 4 != 0 {
-							return Err(MipsError::InvalidMain);
-						}
+			// split on 'whitespace' and '='
+			let inst_regex = Regex::new("[,\\s]+").unwrap();
+			let assign_regex = Regex::new("[=\\s]+").unwrap();
+			let label_regex = Regex::new("[A-Za-z]+:").unwrap();
+			let quote_regex = Regex::new("\"").unwrap();
+			if label_regex.is_match(line) {
+				if line.starts_with("main:") {
+					if data_pointer % 4 != 0 {
+						return Err(MipsError::InvalidMain);
 					}
-					labels.insert(String::from(line), data_pointer);
-					continue;
+				}
+				labels.insert(String::from(line), data_pointer);
+				continue;
+			}
+
+			// match within
+			match state {
+
+				LoadingState::FileOpen => {
+					if line == ".data" {
+						state = LoadingState::Data;
+						continue;
+					}
+					let mut terms = assign_regex.split(line);
+					let lbl = terms.next().unwrap().trim();
+					let val = terms.next().unwrap().trim();
+					variables.insert(lbl.parse().unwrap(), val.parse().unwrap());
 				}
 
-				// match within
-				match state {
-
-					LoadingState::FileOpen => {
-						if line == ".data" {
-							state = LoadingState::Data;
-							continue;
-						}
-						let mut terms = assign_regex.split(line);
-						let lbl = terms.next().unwrap().trim();
-						let val = terms.next().unwrap().trim();
-						variables.insert(lbl.parse().unwrap(), val.parse().unwrap());
+				LoadingState::Data => {
+					if line == ".text" {
+						state = LoadingState::Code;
+						continue;
 					}
 
-					LoadingState::Data => {
-						if line == ".text" {
-							state = LoadingState::Code;
+					let mut terms = assign_regex.split(line);
+					if line.starts_with(".align") {
+						let _ = terms.next(); // the .assign keyword
+						// the value is in terms of halfwords. I don't know why, it just is.
+						let val: u32 = terms.next().unwrap().trim().parse().unwrap();
+						if data_pointer % (2 * val) != 0 {
+							self.program.push(current_line);
+							data_pointer = (self.program.len() * 4) as u32;
+							current_line = 0;
 							continue;
 						}
-
-						let mut terms = assign_regex.split(line);
-						if line.starts_with(".align") {
-							let _ = terms.next(); // the .assign keyword
-							// the value is in terms of halfwords. I don't know why, it just is.
-							let val: u32 = terms.next().unwrap().trim().parse().unwrap();
-							if data_pointer % (2 * val) != 0 {
-								self.program.push(current_line);
-								data_pointer = (self.program.len() * 4) as u32;
-								current_line = 0;
-								continue;
-							}
-						} else if line.starts_with(".space") { /* 8 bits times the size */
-							let _ = terms.next(); // the .assign keyword
-							let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
-							for i in 0..val as usize {
-								// loads in a SINGLE BYTE into where-ever the data_pointer says
-								current_line = MipsInterpreter::load_zero_into_line(current_line, i%4);
-								data_pointer += 1;
-								if data_pointer % 4 == 0 {
-									self.program.push(current_line);
-									current_line = 0;
-								}
-							}
-						} else if line.starts_with(".word") { /* 32 bits */
-							let _ = terms.next(); // we can skip the ".word" at the start
-							let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
-							for i in 0..4 {
-								let b = MipsInterpreter::get_byte_segment_u32(val as u32, i);
-								current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
-								data_pointer += 1;
-								if data_pointer % 4 == 0 {
-									self.program.push(current_line);
-									current_line = 0;
-								}
-							}
-						} else if line.starts_with(".halfword") { /* 16 bits */
-							let _ = terms.next(); // we can skip the ".word" at the start
-							let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
-							for i in 0..2 {
-								let b = MipsInterpreter::get_byte_segment_u16(val as u16, i);
-								current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
-								data_pointer += 1;
-								if data_pointer % 4 == 0 {
-									self.program.push(current_line);
-									current_line = 0;
-								}
-							}
-						} else if line.starts_with(".ascii") { /* 8 bits per character */
-							let mut terms = quote_regex.split(line);
-							let _ = terms.next(); // we can skip the .asciiz
-							// and just look at the contents of the quote
-							let contents = terms.next().unwrap();
-							let mut escape_flag = false;
-							for mut c in contents.chars() {
-								if c == '\\' {
-									escape_flag = true;
-									continue;
-								}
-								if escape_flag && c == 'n' {
-									c = '\n';
-								}
-								let b = c as u8;
-								current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
-								data_pointer += 1;
-								if data_pointer % 4 == 0 {
-									self.program.push(current_line);
-									current_line = 0;
-								}
-							}
-						} else if line.starts_with(".asciiz") { /* 8 bits per character plus the empty */
-							let mut terms = quote_regex.split(line);
-							let _ = terms.next(); // we can skip the .asciiz
-							// and just look at the contents of the quote
-							let contents = terms.next().unwrap();
-							for c in contents.chars() {
-								let b = c.to_digit(10).unwrap() as u8;
-								current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
-								data_pointer += 1;
-								if data_pointer % 4 == 0 {
-									self.program.push(current_line);
-									current_line = 0;
-								}
-							}
-							// 0 is the NULL character for ASCII
-							current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, 0);
+					} else if line.starts_with(".space") { /* 8 bits times the size */
+						let _ = terms.next(); // the .assign keyword
+						let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
+						for i in 0..val as usize {
+							// loads in a SINGLE BYTE into where-ever the data_pointer says
+							current_line = MipsInterpreter::load_zero_into_line(current_line, i%4);
 							data_pointer += 1;
 							if data_pointer % 4 == 0 {
 								self.program.push(current_line);
 								current_line = 0;
 							}
-						} else if line.starts_with(".byte") { /* 8 bits */
-							let _ = terms.next(); // we can skip the ".byte" at the start
-							let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
-							//
-							current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, val as u8);
+						}
+					} else if line.starts_with(".word") { /* 32 bits */
+						let _ = terms.next(); // we can skip the ".word" at the start
+						let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
+						for i in 0..4 {
+							let b = MipsInterpreter::get_byte_segment_u32(val as u32, i);
+							current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
 							data_pointer += 1;
 							if data_pointer % 4 == 0 {
 								self.program.push(current_line);
 								current_line = 0;
 							}
-						} else if line.starts_with(".float") {
-							// DISABLED
-						} else if line.starts_with(".double") {
-							// DISABLED
+						}
+					} else if line.starts_with(".halfword") { /* 16 bits */
+						let _ = terms.next(); // we can skip the ".word" at the start
+						let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
+						for i in 0..2 {
+							let b = MipsInterpreter::get_byte_segment_u16(val as u16, i);
+							current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
+							data_pointer += 1;
+							if data_pointer % 4 == 0 {
+								self.program.push(current_line);
+								current_line = 0;
+							}
+						}
+					} else if line.starts_with(".ascii") { /* 8 bits per character */
+						let mut terms = quote_regex.split(line);
+						let _ = terms.next(); // we can skip the .asciiz
+						// and just look at the contents of the quote
+						let contents = terms.next().unwrap();
+						let mut escape_flag = false;
+						for mut c in contents.chars() {
+							if c == '\\' {
+								escape_flag = true;
+								continue;
+							}
+							if escape_flag && c == 'n' {
+								c = '\n';
+							}
+							let b = c as u8;
+							current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
+							data_pointer += 1;
+							if data_pointer % 4 == 0 {
+								self.program.push(current_line);
+								current_line = 0;
+							}
+						}
+					} else if line.starts_with(".asciiz") { /* 8 bits per character plus the empty */
+						let mut terms = quote_regex.split(line);
+						let _ = terms.next(); // we can skip the .asciiz
+						// and just look at the contents of the quote
+						let contents = terms.next().unwrap();
+						for c in contents.chars() {
+							let b = c.to_digit(10).unwrap() as u8;
+							current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, b);
+							data_pointer += 1;
+							if data_pointer % 4 == 0 {
+								self.program.push(current_line);
+								current_line = 0;
+							}
+						}
+						// 0 is the NULL character for ASCII
+						current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, 0);
+						data_pointer += 1;
+						if data_pointer % 4 == 0 {
+							self.program.push(current_line);
+							current_line = 0;
+						}
+					} else if line.starts_with(".byte") { /* 8 bits */
+						let _ = terms.next(); // we can skip the ".byte" at the start
+						let val = MipsInterpreter::read_val_or_immediate(&mut variables, &mut labels, &mut terms);
+						//
+						current_line = MipsInterpreter::add_byte_to_line(current_line, data_pointer, val as u8);
+						data_pointer += 1;
+						if data_pointer % 4 == 0 {
+							self.program.push(current_line);
+							current_line = 0;
+						}
+					} else if line.starts_with(".float") {
+						// DISABLED
+					} else if line.starts_with(".double") {
+						// DISABLED
+					}
+				}
+
+				LoadingState::Code => {
+					let mut terms = inst_regex.split(line);
+					if line.starts_with(".align") {
+						let _ = terms.next(); // the .assign keyword
+						// the value is in terms of halfwords. I don't know why, it just is.
+						let val: u32 = terms.next().unwrap().trim().parse().unwrap();
+						if data_pointer % (2 * val) != 0 {
+							self.program.push(current_line);
+							data_pointer = (self.program.len() * 4) as u32;
+							current_line = 0;
+							continue;
 						}
 					}
 
-					LoadingState::Code => {
-						let mut terms = inst_regex.split(line);
-						if line.starts_with(".align") {
-							let _ = terms.next(); // the .assign keyword
-							// the value is in terms of halfwords. I don't know why, it just is.
-							let val: u32 = terms.next().unwrap().trim().parse().unwrap();
-							if data_pointer % (2 * val) != 0 {
-								self.program.push(current_line);
-								data_pointer = (self.program.len() * 4) as u32;
-								current_line = 0;
-								continue;
+					let op = terms.next().unwrap();
+					let opcode = OPName::from(op);
+					let mut result = 0;
+					let func = match opcode {
+						instruction::OP_ADD => { MipsInterpreter::make_add }
+						instruction::OP_ADDI => { MipsInterpreter::make_addi }
+						instruction::OP_ADDIU => { MipsInterpreter::make_addiu }
+						instruction::OP_ADDU => { MipsInterpreter::make_addu }
+						instruction::OP_SUB => { MipsInterpreter::make_sub }
+						instruction::OP_SUBU => { MipsInterpreter::make_subu }
+						instruction::OP_AND => { MipsInterpreter::make_and }
+						instruction::OP_ANDI => { MipsInterpreter::make_andi }
+						instruction::OP_OR => { MipsInterpreter::make_or }
+						instruction::OP_ORI => {
+							if op == "li" {
+								MipsInterpreter::make_li
+							} else {
+								MipsInterpreter::make_ori
 							}
 						}
-
-						let op = terms.next().unwrap();
-						let opcode = OPName::from(op);
-						let mut result = 0;
-						let func = match opcode {
-							instruction::OP_ADD => { MipsInterpreter::make_add }
-							instruction::OP_ADDI => { MipsInterpreter::make_addi }
-							instruction::OP_ADDIU => { MipsInterpreter::make_addiu }
-							instruction::OP_ADDU => { MipsInterpreter::make_addu }
-							instruction::OP_SUB => { MipsInterpreter::make_sub }
-							instruction::OP_SUBU => { MipsInterpreter::make_subu }
-							instruction::OP_AND => { MipsInterpreter::make_and }
-							instruction::OP_ANDI => { MipsInterpreter::make_andi }
-							instruction::OP_OR => { MipsInterpreter::make_or }
-							instruction::OP_ORI => {
-								if op == "li" {
-									MipsInterpreter::make_li
-								} else {
-									MipsInterpreter::make_ori
-								}
-							}
-							instruction::OP_XOR => { MipsInterpreter::make_xor }
-							instruction::OP_XORI => { MipsInterpreter::make_xori }
-							instruction::OP_NOR => { MipsInterpreter::make_nor }
-							instruction::OP_SLL => { MipsInterpreter::make_sll }
-							instruction::OP_SRL => { MipsInterpreter::make_srl }
-							instruction::OP_SRA => { MipsInterpreter::make_sra }
-							instruction::OP_SLLV => { MipsInterpreter::make_sllv }
-							instruction::OP_SRLV => { MipsInterpreter::make_srlv }
-							instruction::OP_SRAV => { MipsInterpreter::make_srav }
-							instruction::OP_SLT => { MipsInterpreter::make_slt }
-							instruction::OP_SLTI => { MipsInterpreter::make_slti }
-							instruction::OP_SLTU => { MipsInterpreter::make_sltu }
-							instruction::OP_SLTIU => { MipsInterpreter::make_sltiu }
-							instruction::OP_MULT => { MipsInterpreter::make_mult }
-							instruction::OP_MULTU => { MipsInterpreter::make_multu }
-							instruction::OP_DIV => { MipsInterpreter::make_div }
-							instruction::OP_DIVU => { MipsInterpreter::make_divu }
-							instruction::OP_MFHI => { MipsInterpreter::make_mfhi }
-							instruction::OP_MTHI => { MipsInterpreter::make_mthi }
-							instruction::OP_MFLO => { MipsInterpreter::make_mflo }
-							instruction::OP_MTLO => { MipsInterpreter::make_mtlo }
-							instruction::OP_LUI => { MipsInterpreter::make_lui }
+						instruction::OP_XOR => { MipsInterpreter::make_xor }
+						instruction::OP_XORI => { MipsInterpreter::make_xori }
+						instruction::OP_NOR => { MipsInterpreter::make_nor }
+						instruction::OP_SLL => { MipsInterpreter::make_sll }
+						instruction::OP_SRL => { MipsInterpreter::make_srl }
+						instruction::OP_SRA => { MipsInterpreter::make_sra }
+						instruction::OP_SLLV => { MipsInterpreter::make_sllv }
+						instruction::OP_SRLV => { MipsInterpreter::make_srlv }
+						instruction::OP_SRAV => { MipsInterpreter::make_srav }
+						instruction::OP_SLT => { MipsInterpreter::make_slt }
+						instruction::OP_SLTI => { MipsInterpreter::make_slti }
+						instruction::OP_SLTU => { MipsInterpreter::make_sltu }
+						instruction::OP_SLTIU => { MipsInterpreter::make_sltiu }
+						instruction::OP_MULT => { MipsInterpreter::make_mult }
+						instruction::OP_MULTU => { MipsInterpreter::make_multu }
+						instruction::OP_DIV => { MipsInterpreter::make_div }
+						instruction::OP_DIVU => { MipsInterpreter::make_divu }
+						instruction::OP_MFHI => { MipsInterpreter::make_mfhi }
+						instruction::OP_MTHI => { MipsInterpreter::make_mthi }
+						instruction::OP_MFLO => { MipsInterpreter::make_mflo }
+						instruction::OP_MTLO => { MipsInterpreter::make_mtlo }
+						instruction::OP_LUI => { MipsInterpreter::make_lui }
 // memory related
-							instruction::OP_LW => { MipsInterpreter::make_lw }
-							instruction::OP_LH => { MipsInterpreter::make_lh }
-							instruction::OP_LHU => { MipsInterpreter::make_lhu }
-							instruction::OP_LB => { MipsInterpreter::make_lb }
-							instruction::OP_LBU => { MipsInterpreter::make_lbu }
-							instruction::OP_SW => { MipsInterpreter::make_sw }
-							instruction::OP_SH => { MipsInterpreter::make_sh }
-							instruction::OP_SB => { MipsInterpreter::make_sb }
+						instruction::OP_LW => { MipsInterpreter::make_lw }
+						instruction::OP_LH => { MipsInterpreter::make_lh }
+						instruction::OP_LHU => { MipsInterpreter::make_lhu }
+						instruction::OP_LB => { MipsInterpreter::make_lb }
+						instruction::OP_LBU => { MipsInterpreter::make_lbu }
+						instruction::OP_SW => { MipsInterpreter::make_sw }
+						instruction::OP_SH => { MipsInterpreter::make_sh }
+						instruction::OP_SB => { MipsInterpreter::make_sb }
 // branching
-							instruction::OP_BEQ => { MipsInterpreter::make_beq }
-							instruction::OP_BNE => { MipsInterpreter::make_bne }
-							instruction::OP_JR => { MipsInterpreter::make_jr }
-							instruction::OP_J => { MipsInterpreter::make_j }
-							instruction::OP_JAL => { MipsInterpreter::make_jal }
-							instruction::OP_SYSCALL => { MipsInterpreter::make_syscall }
-							_ => { return Err(MipsError::UnknownInstruction(opcode)); }
-						};
-						match func(line) {
-							Some(res) => { result = res; }
-							None => { return Err(MipsError::SyntaxError(current_line as usize)); }
-						}
-
-						self.program.push(result);
-						data_pointer = (self.program.len() * 4) as u32;
+						instruction::OP_BEQ => { MipsInterpreter::make_beq }
+						instruction::OP_BNE => { MipsInterpreter::make_bne }
+						instruction::OP_JR => { MipsInterpreter::make_jr }
+						instruction::OP_J => { MipsInterpreter::make_j }
+						instruction::OP_JAL => { MipsInterpreter::make_jal }
+						instruction::OP_SYSCALL => { MipsInterpreter::make_syscall }
+						_ => { return Err(MipsError::UnknownInstruction(opcode)); }
+					};
+					match func(line) {
+						Some(res) => { result = res; }
+						None => { return Err(MipsError::SyntaxError(current_line as usize)); }
 					}
+
+					self.program.push(result);
+					data_pointer = (self.program.len() * 4) as u32;
 				}
-			} // for each line
-		}; // end if Ok(contents)
+			}
+		} // for each line
+
+		// There MIGHT be lingering bits, but shouldn't be there!
+		// Check and push onto the program just in case
+		if data_pointer % 4 != 0 {
+			self.program.push(current_line);
+		}
 
 		match labels.entry(String::from("main")) {
 			Entry::Occupied(v) => {
