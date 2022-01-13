@@ -1,5 +1,5 @@
 # Author:	Colin Carlson
-# Description:	Main file for csci250 project
+# Description:	Main file for peg jumping game
 
 # syscall codes
 PRINT_INT =     1

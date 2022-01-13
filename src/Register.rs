@@ -73,7 +73,8 @@ pub enum RegNames {
 
 impl RegNames {
 	pub fn str_to_enum(s: &str) -> RegNames {
-		match s {
+		let lower = s.to_ascii_uppercase();
+		match lower.as_str() {
 			"R1" => RegNames::R1,
 			"R2" => RegNames::R2,
 			"R3" => RegNames::R3,
@@ -223,43 +224,41 @@ impl RegNames {
 		res
 	}
 
-	pub fn idx_from_enum(n: &RegNames) -> usize {
+	pub fn idx_from_enum(n: &RegNames) -> Option<usize> {
 		match n {
-			RegNames::R0 => 0,
-			RegNames::R1 => 1,
-			RegNames::R2 => 2,
-			RegNames::R3 => 3,
-			RegNames::R4 => 4,
-			RegNames::R5 => 5,
-			RegNames::R6 => 6,
-			RegNames::R7 => 7,
-			RegNames::R8 => 8,
-			RegNames::R9 => 9,
-			RegNames::R10 => 10,
-			RegNames::R11 => 11,
-			RegNames::R12 => 12,
-			RegNames::R13 => 13,
-			RegNames::R14 => 14,
-			RegNames::R15 => 15,
-			RegNames::R16 => 16,
-			RegNames::R17 => 17,
-			RegNames::R18 => 18,
-			RegNames::R19 => 19,
-			RegNames::R20 => 20,
-			RegNames::R21 => 21,
-			RegNames::R22 => 22,
-			RegNames::R23 => 23,
-			RegNames::R24 => 24,
-			RegNames::R25 => 25,
-			RegNames::R26 => 26,
-			RegNames::R27 => 27,
-			RegNames::R28 => 28,
-			RegNames::R29 => 29,
-			RegNames::R30 => 30,
-			RegNames::R31 => 31,
-
-			RegNames::ZERO => 0,
-			_ => 0
+			RegNames::R0 => Some(0),
+			RegNames::R1 => Some(1),
+			RegNames::R2 => Some(2),
+			RegNames::R3 => Some(3),
+			RegNames::R4 => Some(4),
+			RegNames::R5 => Some(5),
+			RegNames::R6 => Some(6),
+			RegNames::R7 => Some(7),
+			RegNames::R8 => Some(8),
+			RegNames::R9 => Some(9),
+			RegNames::R10 => Some(10),
+			RegNames::R11 => Some(11),
+			RegNames::R12 => Some(12),
+			RegNames::R13 => Some(13),
+			RegNames::R14 => Some(14),
+			RegNames::R15 => Some(15),
+			RegNames::R16 => Some(16),
+			RegNames::R17 => Some(17),
+			RegNames::R18 => Some(18),
+			RegNames::R19 => Some(19),
+			RegNames::R20 => Some(20),
+			RegNames::R21 => Some(21),
+			RegNames::R22 => Some(22),
+			RegNames::R23 => Some(23),
+			RegNames::R24 => Some(24),
+			RegNames::R25 => Some(25),
+			RegNames::R26 => Some(26),
+			RegNames::R27 => Some(27),
+			RegNames::R28 => Some(28),
+			RegNames::R29 => Some(29),
+			RegNames::R30 => Some(30),
+			RegNames::R31 => Some(31),
+			_ => RegNames::idx_from_enum( &RegNames::register_align(n) )
 		}
 	}
 }

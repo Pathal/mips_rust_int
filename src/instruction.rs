@@ -31,7 +31,6 @@ pub const OP_MFHI: u32	= 0b00000000000000000000000000010000;
 pub const OP_MTHI: u32	= 0b00000000000000000000000000010001;
 pub const OP_MFLO: u32	= 0b00000000000000000000000000010010;
 pub const OP_MTLO: u32	= 0b00000000000000000000000000010011;
-pub const OP_LI: u32	= 0b0;
 pub const OP_LUI: u32	= 0b00111100000000000000000000000000;
 // memory related
 pub const OP_LW: u32	= 0b10001100000000000000000000000000;
@@ -144,7 +143,7 @@ impl OPName {
 			"mthi"	=> { OP_MTHI },
 			"mflo"	=> { OP_MFLO },
 			"mtlo"	=> { OP_MTLO },
-			"li"	=> { OP_LI },
+			"li"	=> { OP_ORI }, // pseudo instruction
 			"lui"	=> { OP_LUI },
 			// memory related
 			"lw"	=> { OP_LW },

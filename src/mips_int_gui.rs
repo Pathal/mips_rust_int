@@ -32,8 +32,14 @@ impl Application for MipsWindow {
 
     fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
         let mut backend = MipsInterpreter::new();
-        if let Err(MipsError::SyntaxError(e)) = backend.load_program(ASM_FILEPATH) {
-            println!("Error parsing ASM on line: {}", e);
+        if let Err(e) = backend.load_program(ASM_FILEPATH) {
+            match e {
+                MipsError::UnknownInstruction(ui) => { println!("Unknown Instruction on line: {}", ui); }
+                MipsError::SyntaxError(l) => { println!("Error parsing ASM on line: {}", l); }
+                MipsError::MissingMain => { println!("Missing 'main' indicator."); }
+                MipsError::InvalidMain => { println!("Invalid 'main' indicator."); }
+                MipsError::UnalignedBytes => { println!("Unaligned bytes."); }
+            }
         };
 
         (MipsWindow {

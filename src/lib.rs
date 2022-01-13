@@ -1,3 +1,5 @@
+#![feature(let_else)]
+
 pub mod mips_int;
 pub mod mips_int_gui;
 
