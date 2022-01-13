@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
+    - name: Setup
+      run: rustup toolchain install nightly-2022-01-11
     - name: Build
       run: cargo +nightly build --verbose
     - name: Run tests
